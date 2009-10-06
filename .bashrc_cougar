@@ -1,0 +1,162 @@
+#
+# Read from config file:
+#
+# CISCO_PRICELIST_FILE
+#
+test -f $HOME/.bashrc_cougar_setup && . $HOME/.bashrc_cougar_setup
+
+##############################################################################
+#
+# Function:
+#	ciscogrep
+# Config:
+#	CISCO_PRICELIST_FILE	location of Cisco pricelist, fields separated with "|"
+# Arguments:
+#	string
+# Output:
+#	formatted pricelist for selected equpment
+#
+
+function ciscogrep
+{
+	if [ ! ${CISCO_PRICELIST_FILE} ]; then
+		echo "$FUNCNAME: \$CISCO_PRICELIST_FILE not defined" >&2
+		return 1
+	fi
+	if [ ! -r ${CISCO_PRICELIST_FILE} ]; then
+		echo "$FUNCNAME: can't read ${CISCO_PRICELIST_FILE}" >&2
+		return 1
+	fi
+	test -n "$1" && CMD="grep \"$@\" \"${CISCO_PRICELIST_FILE}\"" || CMD="cat \"${CISCO_PRICELIST_FILE}\""
+	eval $CMD \
+		| awk '
+			BEGIN {
+				FS = "|";
+				L1 = "";
+				L2 = "";
+			}
+			{
+				if ($2 != L1) {
+					printf("  %s\n", $2);
+					L1 = $2;
+				}
+				if ($3 != L2) {
+					printf("      %s\n", $3);
+					L2 = $3;
+				}
+				if ($7 < 1000) {
+					P = sprintf("$%d", $7);
+				} else {
+					P1 = $7 / 1000;
+					P2 = $7 % 1000;
+					P = sprintf("$%d,%03d", P1, P2);
+				}
+				printf("         %-24s %-91s %3s %18s\n", $4, $5, $6, P);
+			}
+		' \
+		| less
+}
+
+##############################################################################
+
+##############################################################################
+# Function:
+#	pidgin_set_status
+# Arguments:
+#	string		saved status name
+#
+# Function:
+#	pidgin_restore_old_status
+#
+
+_dbus-send-recv()
+{
+	local dbusdest dbuspath dbusmsg dbusmember replytype
+	dbusdest="$1"; shift
+	dbuspath="$1"; shift
+	dbusmsg="$1"; shift
+	dbusmember="$1"; shift
+	replytype="$1"; shift
+	if [ "$1" ]; then
+		dbus-send \
+			--dest=${dbusdest} \
+			--print-reply \
+			--type=method_call \
+			${dbuspath} \
+			${dbusmsg}.${dbusmember} \
+			"$@" \
+		| grep $replytype \
+		| sed 's/^ *[^ ]* *//' \
+		| sed 's/^"//' \
+		| sed 's/"$//'
+	else
+		dbus-send \
+			--dest=${dbusdest} \
+			--print-reply \
+			--type=method_call \
+			${dbuspath} \
+			${dbusmsg}.${dbusmember} \
+		| grep $replytype \
+		| sed 's/^ *[^ ]* *//' \
+		| sed 's/^"//' \
+		| sed 's/"$//'
+	fi
+}
+
+_dbus_pidgin()
+{
+	_dbus-send-recv im.pidgin.purple.PurpleService /im/pidgin/purple/PurpleObject im.pidgin.purple.PurpleInterface "$@"
+}
+
+_pidgin_find_saved_status()
+{
+	local findstatus i
+	findstatus="$1"
+	for i in $(_dbus_pidgin PurpleSavedstatusesGetAll "int32")
+	do
+		if [ "${findstatus}" = $(_dbus_pidgin PurpleSavedstatusGetTitle "string" "int32:${i}") ]; then
+			echo $i
+			return
+		fi
+	done
+}
+
+_pidgin_get_status()
+{
+	_dbus_pidgin PurpleSavedstatusGetCurrent "int32"
+}
+
+_pidgin_set_status()
+{
+	_dbus_pidgin PurpleSavedstatusActivate none "int32:$1"
+}
+
+pidgin_set_status()
+{
+	if [ type dbus-send > /dev/null 2>&1 ]; then
+		echo "dbus-send is not installed" >&2
+		return 1
+	fi
+	if [ -z "$1" ]; then
+		echo "usage: $FUNCNAME <saved status name>" >&2
+		return
+	fi
+	local newstatusid
+	newstatusid=$(_pidgin_find_saved_status $1)
+	if [ "$newstatusid" ]; then
+		PIDGIN_OLD_STATUS_ID=$(_pidgin_get_status)
+		_pidgin_set_status $newstatusid
+	else
+		echo "no such saved status" >&2
+	fi
+}
+
+pidgin_restore_old_status()
+{
+	if [ type dbus-send > /dev/null 2>&1 ]; then
+		echo "dbus-send is not installed" >&2
+		return 1
+	fi
+	[ "${PIDGIN_OLD_STATUS_ID}" ] && _pidgin_set_status ${PIDGIN_OLD_STATUS_ID}
+	unset PIDGIN_OLD_STATUS_ID
+}
